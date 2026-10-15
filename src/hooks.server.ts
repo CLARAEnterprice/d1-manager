@@ -44,57 +44,68 @@ export const handleError: HandleServerError = async ({ error }) => {
 
 // --- Funzione di notifica (aggiunta) ---
 async function notifyAccess(event: any) {
-	const env = event.platform?.env || {};
-	const request = event.request;
+  const env = event.platform?.env || {};
+  const request = event.request;
 
-	console.log(">>> Hook eseguito:", request.url);
+  const path = new URL(request.url).pathname;
+  console.log(`>>> Richiesta: ${request.method} ${path}`);
 
-	const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
-	const ntfyToken = env.NTFY_TOKEN;
+  const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
+  const ntfyToken = env.NTFY_TOKEN;
+  if (!webhookUrl || !ntfyToken) {
+    console.log('>>> STOP: variabili mancanti');
+    return;
+  }
 
-	if (!webhookUrl || !ntfyToken) {
-		console.log(">>> STOP: variabili mancanti");
-		return;
-	}
+  if (request.method !== 'GET') return;
 
-	if (request.method !== "GET") return;
+  // Filtra solo le navigazioni (esclude fetch API, prefetch, ecc.)
+  const secFetchDest = request.headers.get('sec-fetch-dest');
+  if (secFetchDest && secFetchDest !== 'document') {
+    console.log(`>>> Skip: sec-fetch-dest=${secFetchDest}`);
+    return;
+  }
 
-	const path = new URL(request.url).pathname;
-	if (path.match(/\.(css|js|mjs|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map|json|txt|xml)$/)) {
-		return;
-	}
+  // Escludi asset statici
+  if (path.match(/\.(css|js|mjs|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map|json|txt|xml|webp|avif)$/)) {
+    return;
+  }
 
-	const userEmail = request.headers.get("Cf-Access-Authenticated-User-Email");
-	const ip = request.headers.get("CF-Connecting-IP") || "sconosciuto";
-	const timestamp = new Date().toLocaleString("it-IT", { timeZone: "Europe/Rome" });
+  const userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
+  const ip = request.headers.get('CF-Connecting-IP') || 'sconosciuto';
+  const timestamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
 
-	const isAuthenticated = !!userEmail;
-	const priority = isAuthenticated ? "2" : "5";
-	const title = isAuthenticated
-		? "🔐 Accesso al DB"
-		: "⚠️ Accesso sconosciuto al DB";
+  const isAuthenticated = !!userEmail;
+  const priority = isAuthenticated ? '2' : '5';
 
-	const body = [
-		`Utente: ${userEmail || "sconosciuto"}`,
-		`IP: ${ip}`,
-		`Pagina: ${path}`,
-		`Ora: ${timestamp}`,
-	].join("\n");
+  // Titolo ASCII, emoji nei tag
+  const title = isAuthenticated
+    ? 'Accesso al DB'
+    : 'Accesso sconosciuto al DB';
+  const tags = isAuthenticated ? 'lock' : 'warning';
 
-	try {
-		console.log(">>> Invio a:", webhookUrl);
-		const response = await fetch(webhookUrl, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${ntfyToken}`,
-				Title: title,
-				Priority: priority,
-				Tags: isAuthenticated ? "lock" : "warning",
-			},
-			body,
-		});
-		console.log(">>> Risposta ntfy:", response.status);
-	} catch (err) {
-		console.error(">>> Errore:", (err as Error).message);
-	}
+  const body = [
+    `Utente: ${userEmail || 'sconosciuto'}`,
+    `IP: ${ip}`,
+    `Pagina: ${path}`,
+    `Ora: ${timestamp}`
+  ].join('\n');
+
+  console.log(`>>> Notifica: utente=${userEmail || 'sconosciuto'} priorità=${priority}`);
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ntfyToken}`,
+        'Title': title,
+        'Priority': priority,
+        'Tags': tags
+      },
+      body
+    });
+    console.log(`>>> Risposta ntfy: ${response.status}`);
+  } catch (err) {
+    console.error('>>> Errore:', (err as Error).message);
+  }
 }
