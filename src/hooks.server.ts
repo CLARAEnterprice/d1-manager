@@ -52,17 +52,15 @@ async function notifyAccess(event: any) {
 
   const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
   const ntfyToken = env.NTFY_TOKEN;
-  if (!webhookUrl || !ntfyToken) {
-    console.log('>>> STOP: variabili mancanti');
-    return;
-  }
+  if (!webhookUrl || !ntfyToken) return;
 
   if (request.method !== 'GET') return;
 
-  // Filtra solo le navigazioni (esclude fetch API, prefetch, ecc.)
+  // Filtro per navigazione (risolve il problema delle due notifiche)
   const secFetchDest = request.headers.get('sec-fetch-dest');
-  if (secFetchDest && secFetchDest !== 'document') {
-    console.log(`>>> Skip: sec-fetch-dest=${secFetchDest}`);
+  const secFetchMode = request.headers.get('sec-fetch-mode');
+  if (secFetchDest !== 'document' && secFetchMode !== 'navigate') {
+    console.log(`>>> Skip: non è una navigazione (dest=${secFetchDest}, mode=${secFetchMode})`);
     return;
   }
 
@@ -71,7 +69,29 @@ async function notifyAccess(event: any) {
     return;
   }
 
-  const userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
+  // --- LOGICA DI AUTENTICAZIONE (MODIFICATA) ---
+  let userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
+  
+  if (!userEmail) {
+    const jwt = request.headers.get('Cf-Access-Jwt-Assertion');
+    if (jwt) {
+      try {
+        // Decodifica il payload del JWT (seconda parte del token)
+        const payloadBase64 = jwt.split('.')[1];
+        // Aggiungi padding e sostituisci i caratteri Base64 URL-safe
+        const base64 = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
+        const payloadJson = atob(base64);
+        const payload = JSON.parse(payloadJson);
+        
+        userEmail = payload.email || null;
+        console.log('>>> Email estratta dal JWT:', userEmail);
+      } catch (e) {
+        console.error('>>> Errore decodifica JWT:', (e as Error).message);
+      }
+    }
+  }
+  // --- FINE LOGICA DI AUTENTICAZIONE ---
+
   const ip = request.headers.get('CF-Connecting-IP') || 'sconosciuto';
   const timestamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
 
@@ -90,8 +110,6 @@ async function notifyAccess(event: any) {
     `Pagina: ${path}`,
     `Ora: ${timestamp}`
   ].join('\n');
-
-  console.log(`>>> Notifica: utente=${userEmail || 'sconosciuto'} priorità=${priority}`);
 
   try {
     const response = await fetch(webhookUrl, {
