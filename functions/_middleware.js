@@ -1,3 +1,14 @@
+export async function onRequest(context) {
+  const { request, env, next } = context;
+
+  console.log('>>> Middleware eseguito:', context.request.url);
+  
+  // Notifica in background, non blocca la risposta
+  context.waitUntil(notifyAccess(request, env));
+
+  return next();
+}
+
 async function notifyAccess(request, env) {
   console.log('>>> notifyAccess avviata');
   console.log('>>> NOTIFICATION_WEBHOOK_URL:', env.NOTIFICATION_WEBHOOK_URL);
