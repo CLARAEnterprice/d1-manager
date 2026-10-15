@@ -42,88 +42,100 @@ export const handleError: HandleServerError = async ({ error }) => {
 	};
 };
 
-// --- Funzione di notifica (aggiunta) ---
+// Cache in-memory: evita notifiche ripetute dallo stesso utente/IP
+const notifiedRecently = new Map<string, number>();
+const NOTIFY_WINDOW_MS = 10 * 60 * 1000; // 10 minuti
+
+function shouldNotify(key: string): boolean {
+	const now = Date.now();
+	const last = notifiedRecently.get(key);
+
+	// Pulisci le voci scadute ogni tanto (evita memory leak)
+	if (notifiedRecently.size > 100) {
+		for (const [k, t] of notifiedRecently) {
+			if (now - t > NOTIFY_WINDOW_MS) notifiedRecently.delete(k);
+		}
+	}
+
+	if (!last || now - last > NOTIFY_WINDOW_MS) {
+		notifiedRecently.set(key, now);
+		return true;
+	}
+	return false;
+}
+
 async function notifyAccess(event: any) {
-  const env = event.platform?.env || {};
-  const request = event.request;
+	const env = event.platform?.env || {};
+	const request = event.request;
 
-  const path = new URL(request.url).pathname;
-  console.log(`>>> Richiesta: ${request.method} ${path}`);
+	// Solo navigazioni (esclude fetch API, prefetch, asset)
+	const secFetchDest = request.headers.get('sec-fetch-dest');
+	if (secFetchDest !== 'document') return;
 
-  const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
-  const ntfyToken = env.NTFY_TOKEN;
-  if (!webhookUrl || !ntfyToken) return;
+	if (request.method !== 'GET') return;
 
-  if (request.method !== 'GET') return;
+	const path = new URL(request.url).pathname;
+	if (path.match(/\.(css|js|mjs|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map|json|txt|xml|webp|avif)$/)) {
+		return;
+	}
 
-  // Filtro per navigazione (risolve il problema delle due notifiche)
-  const secFetchDest = request.headers.get('sec-fetch-dest');
-  const secFetchMode = request.headers.get('sec-fetch-mode');
-  if (secFetchDest !== 'document' && secFetchMode !== 'navigate') {
-    console.log(`>>> Skip: non è una navigazione (dest=${secFetchDest}, mode=${secFetchMode})`);
-    return;
-  }
+	const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
+	const ntfyToken = env.NTFY_TOKEN;
+	if (!webhookUrl || !ntfyToken) return;
 
-  // Escludi asset statici
-  if (path.match(/\.(css|js|mjs|png|jpg|jpeg|svg|ico|woff|woff2|ttf|map|json|txt|xml|webp|avif)$/)) {
-    return;
-  }
+	// --- IDENTITÀ UTENTE ---
+	let userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
 
-  // --- LOGICA DI AUTENTICAZIONE (MODIFICATA) ---
-  let userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
-  
-  if (!userEmail) {
-    const jwt = request.headers.get('Cf-Access-Jwt-Assertion');
-    if (jwt) {
-      try {
-        // Decodifica il payload del JWT (seconda parte del token)
-        const payloadBase64 = jwt.split('.')[1];
-        // Aggiungi padding e sostituisci i caratteri Base64 URL-safe
-        const base64 = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
-        const payloadJson = atob(base64);
-        const payload = JSON.parse(payloadJson);
-        
-        userEmail = payload.email || null;
-        console.log('>>> Email estratta dal JWT:', userEmail);
-      } catch (e) {
-        console.error('>>> Errore decodifica JWT:', (e as Error).message);
-      }
-    }
-  }
-  // --- FINE LOGICA DI AUTENTICAZIONE ---
+	if (!userEmail) {
+		const jwt = request.headers.get('Cf-Access-Jwt-Assertion');
+		if (jwt) {
+			try {
+				const payloadBase64 = jwt.split('.')[1];
+				const base64 = payloadBase64.replace(/-/g, '+').replace(/_/g, '/');
+				const payload = JSON.parse(atob(base64));
+				userEmail = payload.email || null;
+			} catch {
+				// Ignora errori di decodifica
+			}
+		}
+	}
 
-  const ip = request.headers.get('CF-Connecting-IP') || 'sconosciuto';
-  const timestamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
+	const ip = request.headers.get('CF-Connecting-IP') || 'sconosciuto';
+	const isAuthenticated = !!userEmail;
 
-  const isAuthenticated = !!userEmail;
-  const priority = isAuthenticated ? '2' : '5';
+	// Chiave per rate limit: email se disponibile, altrimenti IP
+	const rateKey = userEmail || `ip:${ip}`;
 
-  // Titolo ASCII, emoji nei tag
-  const title = isAuthenticated
-    ? 'Accesso al DB'
-    : 'Accesso sconosciuto al DB';
-  const tags = isAuthenticated ? 'lock' : 'warning';
+	if (!shouldNotify(rateKey)) return;
 
-  const body = [
-    `Utente: ${userEmail || 'sconosciuto'}`,
-    `IP: ${ip}`,
-    `Pagina: ${path}`,
-    `Ora: ${timestamp}`
-  ].join('\n');
+	const timestamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
+	const priority = isAuthenticated ? '2' : '5';
+	const title = isAuthenticated ? 'Accesso al DB' : 'Accesso sconosciuto al DB';
+	const tags = isAuthenticated ? 'lock' : 'warning';
 
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${ntfyToken}`,
-        'Title': title,
-        'Priority': priority,
-        'Tags': tags
-      },
-      body
-    });
-    console.log(`>>> Risposta ntfy: ${response.status}`);
-  } catch (err) {
-    console.error('>>> Errore:', (err as Error).message);
-  }
+	const body = [
+		`Utente: ${userEmail || 'sconosciuto'}`,
+		`IP: ${ip}`,
+		`Pagina: ${path}`,
+		`Ora: ${timestamp}`
+	].join('\n');
+
+	try {
+		const response = await fetch(webhookUrl, {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${ntfyToken}`,
+				Title: title,
+				Priority: priority,
+				Tags: tags
+			},
+			body
+		});
+
+		if (!response.ok) {
+			console.error(`Errore notifica: ${response.status} ${response.statusText}`);
+		}
+	} catch (err) {
+		console.error('Errore fetch ntfy:', (err as Error).message);
+	}
 }
