@@ -1,6 +1,8 @@
 export async function onRequest(context) {
   const { request, env, next } = context;
 
+  console.log('Middleware eseguito:', context.request.url);
+  
   // Notifica in background, non blocca la risposta
   context.waitUntil(notifyAccess(request, env));
 
