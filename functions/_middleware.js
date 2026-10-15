@@ -1,40 +1,34 @@
-export async function onRequest(context) {
-  const { request, env, next } = context;
-
-  console.log('Middleware eseguito:', context.request.url);
-  
-  // Notifica in background, non blocca la risposta
-  context.waitUntil(notifyAccess(request, env));
-
-  return next();
-}
-
 async function notifyAccess(request, env) {
+  console.log('>>> notifyAccess avviata');
+  console.log('>>> NOTIFICATION_WEBHOOK_URL:', env.NOTIFICATION_WEBHOOK_URL);
+  console.log('>>> NTFY_TOKEN presente:', !!env.NTFY_TOKEN);
+
   const webhookUrl = env.NOTIFICATION_WEBHOOK_URL;
   const ntfyToken = env.NTFY_TOKEN;
 
   if (!webhookUrl || !ntfyToken) {
-    console.log('NOTIFICATION_WEBHOOK_URL o NTFY_TOKEN non configurati');
+    console.log('>>> STOP: variabili mancanti');
     return;
   }
 
-  // Notifica solo le richieste HTML (accessi reali alla pagina)
-  // Esclude CSS, JS, immagini e altre risorse statiche
   const accept = request.headers.get('Accept') || '';
-  if (!accept.includes('text/html')) return;
+  console.log('>>> Accept ricevuto:', accept);
 
-  // Identità utente da Cloudflare Access
+  if (!accept.includes('text/html')) {
+    console.log('>>> STOP: Accept non contiene text/html');
+    return;
+  }
+
   const userEmail = request.headers.get('Cf-Access-Authenticated-User-Email');
   const ip = request.headers.get('CF-Connecting-IP') || 'sconosciuto';
   const path = new URL(request.url).pathname;
   const timestamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
 
-  // Priorità condizionale: 2 se autenticato, 5 se sconosciuto
   const isAuthenticated = !!userEmail;
   const priority = isAuthenticated ? '2' : '5';
-  const title = isAuthenticated
-    ? '🔐 Accesso al DB'
-    : '⚠️ Accesso sconosciuto al DB';
+  const title = isAuthenticated ? '🔐 Accesso al DB' : '⚠️ Accesso sconosciuto al DB';
+
+  console.log('>>> Utente:', userEmail || 'sconosciuto', '| Priorità:', priority);
 
   const body = [
     `Utente: ${userEmail || 'sconosciuto'}`,
@@ -44,7 +38,8 @@ async function notifyAccess(request, env) {
   ].join('\n');
 
   try {
-    await fetch(webhookUrl, {
+    console.log('>>> Invio fetch a:', webhookUrl);
+    const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${ntfyToken}`,
@@ -54,7 +49,8 @@ async function notifyAccess(request, env) {
       },
       body
     });
+    console.log('>>> Risposta ntfy:', response.status, response.statusText);
   } catch (err) {
-    console.error('Errore notifica accesso:', err.message);
+    console.error('>>> ERRORE fetch:', err.message);
   }
 }
